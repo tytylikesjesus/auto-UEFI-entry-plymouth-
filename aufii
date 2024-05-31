@@ -1,154 +1,155 @@
 #!/bin/bash
+
 ### Automatically generate UEFI-boot entries
-usage() { printf "Usage:\t aufii \naufii is a simple interactive tool to automatically generate UEFI boot entries. It generates efibootmgr commands and exports them to a small executable. You can safely run the script as it does write nothing without further confirmation. \n [-h]\t<display help>\n "; 1>&2; exit 1; }
+usage() { 
+    printf "Usage:\t aufii \naufii is a simple interactive tool to automatically generate UEFI boot entries. It generates efibootmgr commands and exports them to a small executable. You can safely run the script as it does write nothing without further confirmation. \n [-h]\t<display help>\n "; 
+    1>&2; 
+    exit 1; 
+}
 
-
-# Compose [and execute] efibootmgr commands 
+# Display usage if -h flag is used
 while getopts :h OPT; do
 	case ${OPT} in
 		h)
 		usage;;
 	esac
 done
+
+# Shift arguments so that $1 now refers to the first non-option argument
 shift $((OPTIND-1))
+
 read -r -p "Simple interactive tool to create UEFI-boot entries. No changes will be written to disk before confirmation. Start now (y/N)? " CHOICE
 if [ "${CHOICE}" != "y" ]; then
   printf "Exiting\n"
   exit 1
 fi
 
-echo ...
-echo ...
-read -r -p "Please specify EFI partition: " str
+echo "..."
+echo "..."
+read -r -p "Please specify EFI partition: " EFI_PARTITION
 
-# Detect partitions
-#EFI=$(blkid | grep EFI | awk -F ':' '{print $1}')
+# Detect EFI partition UUID
+EFI_UUID=$(blkid | grep "${EFI_PARTITION}" | awk -F '"' '{print $2}')
 
-EFI=${str}
-EFIU=$(blkid | grep "${EFI}" | awk -F '"' '{print $2}')
+# Extract disk and partition numbers
+DISK=$(echo "${EFI_PARTITION}" | awk -F 'p' '{print $1}')
+PART=$(echo "${EFI_PARTITION}" | awk -F 'p' '{print $2}')
 
-## Check if drive is /dev/nvmeXXX or /dev/sdXX
-if [ "${EFI:5:4}" == "nvme" ]; then
-  DISK=$(echo "${EFI}" | awk -F 'p' '{print $1}')
-  PART=$(echo "${EFI}" | awk -F 'p' '{print $2}')
+# Detect root and swap UUIDs
+ROOT_UUID=$(blkid | grep -w "/" | awk -F '"' '{print $2}')
+SWAP_UUID=$(blkid | grep swap | awk -F '"' '{print $2}')
+
+# Check if drive is /dev/nvmeXXX or /dev/sdXX
+if [ "${DISK:5:4}" == "nvme" ]; then
+  DISK_NUM="${DISK: -1}"
 else
-  DISK=$(echo "${EFI::-1}")
-  PART=$(echo "${EFI: -1}")
+  DISK_NUM="${DISK: -2}"
 fi
 
-AROT=$(lsblk| grep -w "/"|awk -F ' ' '{print $1}'|tail -c4)
-ROOT=$(blkid | grep "${AROT}"| awk -F '"' '{print $2}')
-SWAP=$(blkid | grep swap | awk -F '"' '{print $2}')
-P_S=$(blkid | grep "${SWAP}" | awk -F ':' '{print $1}')
-P_E=$(blkid | grep "${EFI}" | awk -F ':' '{print $1}')
-P_R=$(blkid | grep "${ROOT}"| awk -F ':' '{print $1}')
-
-echo ...
-echo ...
-read -r -p "Include microcode (amd/intel/no)? (a/i/n) " CHOICE
-case ${CHOICE} in
-a)
-echo "Including amd-ucode"
-UCODE="initrd=\amd-ucode.img"
-echo ...
-echo ...;;
-i)
-echo "Including intel-ucode"
-UCODE="initrd=\intel-ucode.img"
-echo ...
-echo ...;;
-n)
-echo "Not using microcode"
-echo ...
-echo ...;;
+# Choose microcode
+read -r -p "Include microcode (amd/intel/no)? (a/i/n) " MICROCODE_CHOICE
+case ${MICROCODE_CHOICE} in
+    a)
+    echo "Including amd-ucode"
+    UCODE="initrd=\amd-ucode.img"
+    ;;
+    i)
+    echo "Including intel-ucode"
+    UCODE="initrd=\intel-ucode.img"
+    ;;
+    n)
+    echo "Not using microcode"
+    UCODE=""
+    ;;
 esac
 
 # Choose kernel
-read -r -p "Choose your kernel: linux, linux-hardened, linux-lts, linux-zen (l/h/s/z) " CHOICE
-case ${CHOICE} in
-l) 
-echo "kernel is linux"
-echo ...
-echo ...
-KERN="";;
-h) 
-echo "kernel is linux-hardened"
-echo ...
-echo ...
-KERN="-hardened";;
-p) 
-echo "kernel is linux-lts"
-echo ...
-echo ...
-KERN="-lts";;
-z) 
-echo "kernel is linux-zen"
-echo ...
-echo ...
-KERN="-zen";;
+read -r -p "Choose your kernel: linux, linux-hardened, linux-lts, linux-zen (l/h/s/z) " KERNEL_CHOICE
+case ${KERNEL_CHOICE} in
+    l) 
+    echo "Kernel is linux"
+    KERNEL=""
+    ;;
+    h) 
+    echo "Kernel is linux-hardened"
+    KERNEL="-hardened"
+    ;;
+    s) 
+    echo "Kernel is linux-lts"
+    KERNEL="-lts"
+    ;;
+    z) 
+    echo "Kernel is linux-zen"
+    KERNEL="-zen"
+    ;;
 esac
-shift $((OPTIND-1))
 
-# Name
-read -r -p "Please label the boot entry (e.g. Arch-Linux): " str
-## empty strings as boot entries may crash uefi menus
-if [ ! -z "$str" -a "$str" != " " ]; then
-  NAME=${str} 
-else
-  printf "Setting \"Arch-Linux\" label\n\n"
-  NAME="Arch-Linux"
+# Name the boot entry
+read -r -p "Please label the boot entry (e.g. Arch-Linux): " BOOT_LABEL
+if [ -z "${BOOT_LABEL}" ]; then
+    BOOT_LABEL="Arch-Linux"
 fi
 
-shift $((OPTIND-1))
-
-# Compose commands
-FLBK=$(echo "efibootmgr --disk ${DISK} --part ${PART} --create --label \"${NAME}-Fallback\" --loader /vmlinuz-linux${KERN} --unicode 'root=UUID=${ROOT} resume=UUID=${SWAP} rw ${UCODE} initrd=\initramfs-linux${KERN}-fallback.img'")
-LINX=$(echo "efibootmgr --disk ${DISK} --part ${PART} --create --label \"${NAME}\" --loader /vmlinuz-linux${KERN} --unicode 'root=UUID=${ROOT} resume=UUID=${SWAP} rw ${UCODE} initrd=\initramfs-linux${KERN}.img'")
-
 # Integrate Plymouth
-PLYMOUTH=$(echo "echo 'echo FRAMEBUFFER=y' > /etc/initramfs-tools/conf.d/splash && update-initramfs -u")
+read -r -p "Integrate Plymouth (y/n)? " PLYMOUTH_CHOICE
+case ${PLYMOUTH_CHOICE} in
+    y)
+    PLYMOUTH_COMMAND="echo 'echo FRAMEBUFFER=y' > /etc/initramfs-tools/conf.d/splash && update-initramfs -u"
+    ;;
+    n)
+    PLYMOUTH_COMMAND=""
+    ;;
+esac
 
-# Prompt detected partitions and composed commands
-printf "Partitions detected:\nEFI:\t${P_E}\t${EFIU}\nRoot:\t${P_R}\t${ROOT}\nSwap:\t${P_S}\t${SWAP}\n"
-echo ...
-echo ...
+# Compose efibootmgr commands
+FLBK_CMD="efibootmgr --disk ${DISK_NUM} --part ${PART} --create --label \"${BOOT_LABEL}-Fallback\" --loader /vmlinuz-linux${KERNEL} --unicode 'root=UUID=${ROOT_UUID} resume=UUID=${SWAP_UUID} rw ${UCODE} initrd=\initramfs-linux${KERNEL}-fallback.img'"
+LINX_CMD="efibootmgr --disk ${DISK_NUM} --part ${PART} --create --label \"${BOOT_LABEL}\" --loader /vmlinuz-linux${KERNEL} --unicode 'root=UUID=${ROOT_UUID} resume=UUID=${SWAP_UUID} rw ${UCODE} initrd=\initramfs-linux${KERNEL}.img'"
+
+# Print partitions and commands
+printf "Partitions detected:\nEFI:\t${EFI_PARTITION}\t${EFI_UUID}\nRoot:\t/\t${ROOT_UUID}\nSwap:\t[Not displayed]\t${SWAP_UUID}\n"
+echo "..."
+echo "..."
 echo "Composed commands:"
-echo ...
-echo "${FLBK}"
-echo ...
-echo "${LINX}"
-echo ...
-echo "Plymouth integration:"
-echo ...
-echo "${PLYMOUTH}"
-echo ...
-echo "To add additional kernel parameters just choose the first option in the next step and edit the file before executing it."
-echo ...
-echo ...
+echo "..."
+echo "${FLBK_CMD}"
+echo "..."
+echo "${LINX_CMD}"
+if [ -n "${PLYMOUTH_COMMAND}" ]; then
+    echo "..."
+    echo "Plymouth integration:"
+    echo "..."
+    echo "${PLYMOUTH_COMMAND}"
+fi
+echo "..."
+echo "To add additional kernel parameters, edit the file UEFI_gen${KERNEL} before executing it."
+echo "..."
+echo "..."
 
 # Write to disk and execute or abort
 write_exec (){
-echo "#!/bin/bash" > UEFI_gen${KERN}
-echo "${FLBK}" >> UEFI_gen${KERN}
-echo "${LINX}" >> UEFI_gen${KERN}
-echo "${PLYMOUTH}" >> UEFI_gen${KERN}
-echo "exit 0" >> UEFI_gen${KERN}
-echo "# See man efibootmgr" >> UEFI_gen${KERN}
-chmod +x UEFI_gen${KERN}
-printf "Commands written to file UEFI_gen${KERN}\n"
+    echo "#!/bin/bash" > UEFI_gen${KERNEL}
+    echo "${FLBK_CMD}" >> UEFI_gen${KERNEL}
+    echo "${LINX_CMD}" >> UEFI_gen${KERNEL}
+    if [ -n "${PLYMOUTH_COMMAND}" ]; then
+        echo "${PLYMOUTH_COMMAND}" >> UEFI_gen${KERNEL}
+    fi
+    echo "exit 0" >> UEFI_gen${KERNEL}
+    echo "# See man efibootmgr" >> UEFI_gen${KERNEL}
+    chmod +x UEFI_gen${KERNEL}
+    printf "Commands written to file UEFI_gen${KERNEL}\n"
 }
 
-read -r -p "Create executable, create and execute (sets UEFI boot entries) or abort (c/ce/a)? " CHOICE 
-case ${CHOICE} in
-c)  # write to file
-write_exec;;
-ce) # write to file and execute it
-write_exec
-./UEFI_gen${KERN} 
-printf "Changes written, poweroff and restart, don't reboot.\n";;
-a)  # abort
-printf "Aborted, no changes written to disk.\n";;
+read -r -p "Create executable, create and execute (sets UEFI boot entries) or abort (c/ce/a)? " EXECUTION_CHOICE
+case ${EXECUTION_CHOICE} in
+    c)  # write to file
+    write_exec;;
+    ce) # write to file and execute it
+    write_exec
+    ./UEFI_gen${KERNEL} 
+    printf "Changes written, poweroff and restart, don't reboot.\n";;
+    a)  # abort
+    printf "Aborted, no changes written to disk.\n";;
 esac
-shift $((OPTIND-1))
 exit 0
+
 
