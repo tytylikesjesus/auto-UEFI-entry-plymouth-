@@ -105,6 +105,9 @@ shift $((OPTIND-1))
 FLBK=$(echo "efibootmgr --disk ${DISK} --part ${PART} --create --label \"${NAME}-Fallback\" --loader /vmlinuz-linux${KERN} --unicode 'root=UUID=${ROOT} resume=UUID=${SWAP} rw ${UCODE} initrd=\initramfs-linux${KERN}-fallback.img'")
 LINX=$(echo "efibootmgr --disk ${DISK} --part ${PART} --create --label \"${NAME}\" --loader /vmlinuz-linux${KERN} --unicode 'root=UUID=${ROOT} resume=UUID=${SWAP} rw ${UCODE} initrd=\initramfs-linux${KERN}.img'")
 
+# Integrate Plymouth
+PLYMOUTH=$(echo "echo 'echo FRAMEBUFFER=y' > /etc/initramfs-tools/conf.d/splash && update-initramfs -u")
+
 # Prompt detected partitions and composed commands
 printf "Partitions detected:\nEFI:\t${P_E}\t${EFIU}\nRoot:\t${P_R}\t${ROOT}\nSwap:\t${P_S}\t${SWAP}\n"
 echo ...
@@ -115,14 +118,20 @@ echo "${FLBK}"
 echo ...
 echo "${LINX}"
 echo ...
+echo "Plymouth integration:"
+echo ...
+echo "${PLYMOUTH}"
+echo ...
 echo "To add additional kernel parameters just choose the first option in the next step and edit the file before executing it."
 echo ...
 echo ...
+
 # Write to disk and execute or abort
 write_exec (){
 echo "#!/bin/bash" > UEFI_gen${KERN}
 echo "${FLBK}" >> UEFI_gen${KERN}
 echo "${LINX}" >> UEFI_gen${KERN}
+echo "${PLYMOUTH}" >> UEFI_gen${KERN}
 echo "exit 0" >> UEFI_gen${KERN}
 echo "# See man efibootmgr" >> UEFI_gen${KERN}
 chmod +x UEFI_gen${KERN}
@@ -142,3 +151,4 @@ printf "Aborted, no changes written to disk.\n";;
 esac
 shift $((OPTIND-1))
 exit 0
+
